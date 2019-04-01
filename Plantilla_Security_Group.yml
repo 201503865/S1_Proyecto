@@ -1,4 +1,49 @@
+Description: >
+  This template contains the security groups required by our entire stack.
+  We create them in a seperate nested template, so they can be referenced
+  by all of the other nested templates.
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: Choose which VPC the security groups should be deployed to
+
 Resources:
+  # This security group defines who/where is allowed to access the ECS hosts directly.
+  # By default we're just allowing access from the load balancer.  If you want to SSH
+  # into the hosts, or expose non-load balanced services you can open their ports here.
+  ECSHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Access to the ECS hosts and the tasks/containers that run on them
+      SecurityGroupIngress:
+        # Only allow inbound access to ECS from the ELB
+        - SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+          IpProtocol: -1
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-ECS-Hosts
+
+  # This security group defines who/where is allowed to access the Application Load Balancer.
+  # By default, we've opened this up to the public internet (0.0.0.0/0) but can you restrict
+  # it further if you want.
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Access to the load balancer that sits in front of ECS
+      SecurityGroupIngress:
+        # Allow access from anywhere to our ECS services
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-LoadBalancers
+
   WebServerSecurityGroup:
     Type: 'AWS::EC2::SecurityGroup'
     Properties:
@@ -13,159 +58,13 @@ Resources:
         - IpProtocol: tcp
           FromPort: '22'
           ToPort: '22'
-          CidrIp: !Ref SSHLocation
-  WebServer:
-    Type: 'AWS::EC2::Instance'
-    Metadata:
-      'AWS::CloudFormation::Init':
-        configSets:
-          wordpress_install:
-            - install_cfn
-            - install_wordpress
-            - configure_wordpress
-        install_cfn:
-          files:
-            /etc/cfn/cfn-hup.conf:
-              content: !Join 
-                - ''
-                - - |
-                    [main]
-                  - stack=
-                  - !Ref 'AWS::StackId'
-                  - |+
+        - CidrIp: 0.0.0.0/0
 
-                  - region=
-                  - !Ref 'AWS::Region'
-                  - |+
+Outputs:
+  ECSHostSecurityGroup:
+    Description: A reference to the security group for ECS hosts
+    Value: !Ref ECSHostSecurityGroup
 
-              mode: '000400'
-              owner: root
-              group: root
-            /etc/cfn/hooks.d/cfn-auto-reloader.conf:
-              content: !Join 
-                - ''
-                - - |
-                    [cfn-auto-reloader-hook]
-                  - |
-                    triggers=post.update
-                  - |
-                    path=Resources.WebServer.Metadata.AWS::CloudFormation::Init
-                  - 'action=/opt/aws/bin/cfn-init -v '
-                  - '         --stack '
-                  - !Ref 'AWS::StackName'
-                  - '         --resource WebServer '
-                  - '         --configsets wordpress_install '
-                  - '         --region '
-                  - !Ref 'AWS::Region'
-                  - |+
-
-              mode: '000400'
-              owner: root
-              group: root
-          services:
-            sysvinit:
-              cfn-hup:
-                enabled: 'true'
-                ensureRunning: 'true'
-                files:
-                  - /etc/cfn/cfn-hup.conf
-                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
-        install_wordpress:
-          packages:
-            yum:
-              php: []
-              php-mysql: []
-              mysql: []
-              mysql-server: []
-              mysql-devel: []
-              mysql-libs: []
-              httpd: []
-          sources:
-            /var/www/html: 'http://wordpress.org/latest.tar.gz'
-          files:
-            /tmp/setup.mysql:
-              content: !Join 
-                - ''
-                - - 'CREATE DATABASE '
-                  - !Ref DBName
-                  - |
-                    ;
-                  - CREATE USER '
-                  - !Ref DBUser
-                  - '''@''localhost'' IDENTIFIED BY '''
-                  - !Ref DBPassword
-                  - |
-                    ';
-                  - 'GRANT ALL ON '
-                  - !Ref DBName
-                  - .* TO '
-                  - !Ref DBUser
-                  - |
-                    '@'localhost';
-                  - |
-                    FLUSH PRIVILEGES;
-              mode: '000400'
-              owner: root
-              group: root
-            /tmp/create-wp-config:
-              content: !Join 
-                - ''
-                - - |
-                    #!/bin/bash -xe
-                  - >
-                    cp /var/www/html/wordpress/wp-config-sample.php
-                    /var/www/html/wordpress/wp-config.php
-                  - sed -i "s/'database_name_here'/'
-                  - !Ref DBName
-                  - |
-                    '/g" wp-config.php
-                  - sed -i "s/'username_here'/'
-                  - !Ref DBUser
-                  - |
-                    '/g" wp-config.php
-                  - sed -i "s/'password_here'/'
-                  - !Ref DBPassword
-                  - |
-                    '/g" wp-config.php
-              mode: '000500'
-              owner: root
-              group: root
-          services:
-            sysvinit:
-              httpd:
-                enabled: 'true'
-                ensureRunning: 'true'
-              mysqld:
-                enabled: 'true'
-                ensureRunning: 'true'
-        configure_wordpress:
-          commands:
-            01_set_mysql_root_password:
-              command: !Join 
-                - ''
-                - - mysqladmin -u root password '
-                  - !Ref DBRootPassword
-                  - ''''
-              test: !Join 
-                - ''
-                - - '$(mysql '
-                  - !Ref DBName
-                  - ' -u root --password='''
-                  - !Ref DBRootPassword
-                  - ''' >/dev/null 2>&1 </dev/null); (( $? != 0 ))'
-            02_create_database:
-              command: !Join 
-                - ''
-                - - mysql -u root --password='
-                  - !Ref DBRootPassword
-                  - ''' < /tmp/setup.mysql'
-              test: !Join 
-                - ''
-                - - '$(mysql '
-                  - !Ref DBName
-                  - ' -u root --password='''
-                  - !Ref DBRootPassword
-                  - ''' >/dev/null 2>&1 </dev/null); (( $? != 0 ))'
-            03_configure_wordpress:
-              command: /tmp/create-wp-config
-              cwd: /var/www/html/wordpress
+  LoadBalancerSecurityGroup:
+    Description: A reference to the security group for load balancers
+    Value: !Ref LoadBalancerSecurityGroup
