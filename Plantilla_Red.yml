@@ -119,6 +119,12 @@ Resources:
     Properties:
       AllocationId: !GetAtt NatGateway2EIP.AllocationId
       SubnetId: !Ref PublicSubnet2
+	  
+  NatIP:
+    Type: "AWS::EC2::EIP"
+    DependsOn: !Ref VPC
+    Properties:
+      Domain: !Ref VPC
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
